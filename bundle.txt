@@ -1,0 +1,480 @@
+=== FILE: build.gradle ===
+plugins {
+    id 'com.android.application' version '8.2.2' apply false
+}
+=== FILE: gradle.properties ===
+org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+android.nonTransitiveRClass=true
+=== FILE: settings.gradle ===
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+rootProject.name = "VoiceAssistant"
+include ':app'
+=== FILE: app/build.gradle ===
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.example.voiceassistant'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.example.voiceassistant"
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+=== FILE: app/src/main/AndroidManifest.xml ===
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
+    <application
+        android:allowBackup="false"
+        android:label="Voice Assistant"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+    </application>
+</manifest>
+=== FILE: app/src/main/java/com/example/voiceassistant/MainActivity.java ===
+package com.example.voiceassistant;
+
+import android.app.Activity;
+import android.app.ActivityManager;
+import android.content.ActivityNotFoundException;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
+import android.graphics.Color;
+import android.hardware.camera2.CameraCharacteristics;
+import android.hardware.camera2.CameraManager;
+import android.media.AudioManager;
+import android.os.BatteryManager;
+import android.os.Bundle;
+import android.os.Environment;
+import android.os.StatFs;
+import android.provider.Settings;
+import android.speech.RecognizerIntent;
+import android.speech.tts.TextToSpeech;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.inputmethod.EditorInfo;
+import android.widget.Button;
+import android.widget.EditText;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
+import android.widget.TextView;
+
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.regex.Pattern;
+
+public class MainActivity extends Activity {
+
+    private static final int REQ_SPEECH = 100;
+
+    private TextView logView;
+    private ScrollView scroll;
+    private EditText input;
+    private Button langButton;
+    private TextToSpeech tts;
+    private boolean ttsReady = false;
+    private String lang = "hi-IN";
+    private boolean torchOn = false;
+    private final Map<String, String> aliases = new LinkedHashMap<>();
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        buildAliases();
+        buildUi();
+        tts = new TextToSpeech(this, status -> {
+            if (status == TextToSpeech.SUCCESS) {
+                int r = tts.setLanguage(new Locale("hi", "IN"));
+                if (r == TextToSpeech.LANG_MISSING_DATA || r == TextToSpeech.LANG_NOT_SUPPORTED) {
+                    tts.setLanguage(Locale.ENGLISH);
+                }
+                ttsReady = true;
+            }
+        });
+        log("असिस्टेंट: नमस्ते! माइक दबाकर बोलिए, जैसे \"बैटरी कितनी है\" या \"YouTube खोलो\"।");
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (tts != null) {
+            tts.stop();
+            tts.shutdown();
+        }
+        super.onDestroy();
+    }
+
+    // ---------------------------------------------------------------- UI
+
+    private int dp(int v) {
+        return (int) (v * getResources().getDisplayMetrics().density);
+    }
+
+    private void buildUi() {
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp(16), dp(16), dp(16), dp(16));
+        root.setBackgroundColor(Color.WHITE);
+
+        TextView title = new TextView(this);
+        title.setText("वॉइस असिस्टेंट");
+        title.setTextSize(22);
+        title.setTextColor(Color.BLACK);
+        root.addView(title);
+
+        scroll = new ScrollView(this);
+        logView = new TextView(this);
+        logView.setTextSize(16);
+        logView.setTextColor(Color.DKGRAY);
+        logView.setPadding(0, dp(12), 0, dp(12));
+        scroll.addView(logView);
+        root.addView(scroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        input = new EditText(this);
+        input.setHint("या यहाँ लिखकर कमांड दें");
+        input.setSingleLine(true);
+        input.setImeOptions(EditorInfo.IME_ACTION_SEND);
+        input.setOnEditorActionListener((v, actionId, event) -> {
+            sendTyped();
+            return true;
+        });
+        row.addView(input, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        Button send = new Button(this);
+        send.setText("भेजो");
+        send.setOnClickListener(v -> sendTyped());
+        row.addView(send);
+        root.addView(row);
+
+        langButton = new Button(this);
+        updateLangButton();
+        langButton.setOnClickListener(v -> {
+            lang = lang.equals("hi-IN") ? "en-IN" : "hi-IN";
+            updateLangButton();
+        });
+        root.addView(langButton);
+
+        Button mic = new Button(this);
+        mic.setText("बोलिए (माइक)");
+        mic.setTextSize(20);
+        mic.setOnClickListener(v -> startVoice());
+        root.addView(mic, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(72)));
+
+        setContentView(root);
+    }
+
+    private void updateLangButton() {
+        langButton.setText(lang.equals("hi-IN")
+                ? "भाषा: हिंदी (बदलने के लिए दबाएँ)"
+                : "Language: English (tap to change)");
+    }
+
+    private void log(String msg) {
+        logView.append(msg + "\n\n");
+        scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
+    }
+
+    private void sendTyped() {
+        String s = input.getText().toString().trim();
+        if (!s.isEmpty()) {
+            input.setText("");
+            handleCommand(s);
+        }
+    }
+
+    // ---------------------------------------------------------------- Voice
+
+    private void startVoice() {
+        Intent i = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+        i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+        i.putExtra(RecognizerIntent.EXTRA_LANGUAGE, lang);
+        i.putExtra(RecognizerIntent.EXTRA_PROMPT, "बोलिए...");
+        try {
+            startActivityForResult(i, REQ_SPEECH);
+        } catch (ActivityNotFoundException e) {
+            log("असिस्टेंट: इस फ़ोन में Google की आवाज़ पहचानने वाली सेवा नहीं मिली। नीचे लिखकर कमांड दें।");
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQ_SPEECH && resultCode == RESULT_OK && data != null) {
+            ArrayList<String> results = data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
+            if (results != null && !results.isEmpty()) {
+                handleCommand(results.get(0));
+            }
+        }
+    }
+
+    private void speak(String text) {
+        if (ttsReady) {
+            tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "reply");
+        }
+    }
+
+    // ---------------------------------------------------------------- Commands
+
+    private void handleCommand(String raw) {
+        log("आप: " + raw);
+        String reply;
+        try {
+            reply = runCommand(raw.toLowerCase(Locale.ROOT).trim());
+        } catch (Exception e) {
+            reply = "कुछ गड़बड़ हो गई: " + e.getClass().getSimpleName();
+        }
+        log("असिस्टेंट: " + reply);
+        speak(reply);
+    }
+
+    private boolean hasAny(String t, String... words) {
+        for (String w : words) {
+            if (t.contains(w)) return true;
+        }
+        return false;
+    }
+
+    private String runCommand(String t) {
+        if (hasAny(t, "टॉर्च", "torch", "flashlight", "फ्लैशलाइट", "फ़्लैशलाइट")) {
+            boolean off = hasAny(t, "बंद", "बन्द", "off", "बुझा", "band");
+            boolean on = hasAny(t, "चालू", "on", "जला", "start");
+            if (off) return setTorch(false);
+            if (on) return setTorch(true);
+            return setTorch(!torchOn);
+        }
+        if (hasAny(t, "बैटरी", "बेटरी", "battery", "चार्ज", "charge")) {
+            return batteryInfo();
+        }
+        if (hasAny(t, "स्टोरेज", "storage", "स्पेस")) {
+            return storageInfo();
+        }
+        if (Pattern.compile("(^|\\W)ram(\\W|$)").matcher(t).find()
+                || hasAny(t, "रैम", "मेमोरी", "memory")) {
+            return ramInfo();
+        }
+        if (hasAny(t, "वॉल्यूम", "वोल्यूम", "volume", "आवाज")) {
+            AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+            if (hasAny(t, "बढ़ा", "बढा", "ज्यादा", "ज़्यादा", "up", "increase", "raise")) {
+                am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_RAISE, AudioManager.FLAG_SHOW_UI);
+                return "वॉल्यूम बढ़ा दिया।";
+            }
+            if (hasAny(t, "घटा", "कम", "down", "decrease", "lower")) {
+                am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_LOWER, AudioManager.FLAG_SHOW_UI);
+                return "वॉल्यूम कम कर दिया।";
+            }
+            am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_SAME, AudioManager.FLAG_SHOW_UI);
+            return "वॉल्यूम बढ़ाना या घटाना है, बताइए।";
+        }
+        if (hasAny(t, "वाईफाई", "वाई-फाई", "वाई फाई", "wifi", "wi-fi", "wi fi")) {
+            startActivity(new Intent(Settings.ACTION_WIFI_SETTINGS));
+            return "वाई-फाई सेटिंग खोल रहा हूँ।";
+        }
+        if (hasAny(t, "ब्लूटूथ", "bluetooth")) {
+            startActivity(new Intent(Settings.ACTION_BLUETOOTH_SETTINGS));
+            return "ब्लूटूथ सेटिंग खोल रहा हूँ।";
+        }
+        if (hasAny(t, "कितने बजे", "समय", "टाइम", "time")) {
+            return "अभी समय है " + new SimpleDateFormat("hh:mm a", Locale.ENGLISH).format(new Date());
+        }
+        if (hasAny(t, "खोल", "open", "launch", "start", "चलाओ", "चला")) {
+            return openApp(t);
+        }
+        return "माफ़ कीजिए, यह कमांड अभी मुझे समझ नहीं आया। आप कह सकते हैं: बैटरी कितनी है, RAM, स्टोरेज, टॉर्च चालू करो, वॉल्यूम बढ़ाओ, या किसी ऐप का नाम बोलकर खोलो।";
+    }
+
+    // ---------------------------------------------------------------- Status
+
+    private String batteryInfo() {
+        Intent b = registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+        if (b == null) return "बैटरी की जानकारी नहीं मिली।";
+        int level = b.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+        int scale = b.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
+        int status = b.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
+        if (level < 0 || scale <= 0) return "बैटरी की जानकारी नहीं मिली।";
+        int pct = level * 100 / scale;
+        boolean charging = status == BatteryManager.BATTERY_STATUS_CHARGING
+                || status == BatteryManager.BATTERY_STATUS_FULL;
+        return "बैटरी " + pct + " प्रतिशत है" + (charging ? " और चार्ज हो रही है।" : "।");
+    }
+
+    private String ramInfo() {
+        ActivityManager am = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
+        ActivityManager.MemoryInfo mi = new ActivityManager.MemoryInfo();
+        am.getMemoryInfo(mi);
+        long totalMb = mi.totalMem / (1024 * 1024);
+        long freeMb = mi.availMem / (1024 * 1024);
+        return "RAM कुल " + totalMb + " MB है, जिसमें से " + freeMb + " MB खाली है।";
+    }
+
+    private String storageInfo() {
+        StatFs fs = new StatFs(Environment.getDataDirectory().getPath());
+        double totalGb = fs.getTotalBytes() / 1073741824.0;
+        double freeGb = fs.getAvailableBytes() / 1073741824.0;
+        return String.format(Locale.ENGLISH,
+                "स्टोरेज कुल %.1f GB है, जिसमें से %.1f GB खाली है।", totalGb, freeGb);
+    }
+
+    // ---------------------------------------------------------------- Actions
+
+    private String setTorch(boolean on) {
+        try {
+            CameraManager cm = (CameraManager) getSystemService(Context.CAMERA_SERVICE);
+            for (String id : cm.getCameraIdList()) {
+                CameraCharacteristics cc = cm.getCameraCharacteristics(id);
+                Boolean flash = cc.get(CameraCharacteristics.FLASH_INFO_AVAILABLE);
+                Integer facing = cc.get(CameraCharacteristics.LENS_FACING);
+                if (flash != null && flash && facing != null
+                        && facing == CameraCharacteristics.LENS_FACING_BACK) {
+                    cm.setTorchMode(id, on);
+                    torchOn = on;
+                    return on ? "टॉर्च चालू कर दी।" : "टॉर्च बंद कर दी।";
+                }
+            }
+            return "इस फ़ोन में टॉर्च नहीं मिली।";
+        } catch (Exception e) {
+            return "टॉर्च नहीं चल पाई।";
+        }
+    }
+
+    private void buildAliases() {
+        aliases.put("यूट्यूब", "youtube");
+        aliases.put("व्हाट्सएप", "whatsapp");
+        aliases.put("व्हाट्सऐप", "whatsapp");
+        aliases.put("वाट्सएप", "whatsapp");
+        aliases.put("वाट्सऐप", "whatsapp");
+        aliases.put("वॉट्सऐप", "whatsapp");
+        aliases.put("इंस्टाग्राम", "instagram");
+        aliases.put("फेसबुक", "facebook");
+        aliases.put("क्रोम", "chrome");
+        aliases.put("गूगल", "google");
+        aliases.put("जीमेल", "gmail");
+        aliases.put("कैमरा", "camera");
+        aliases.put("गैलरी", "gallery");
+        aliases.put("सेटिंग्स", "settings");
+        aliases.put("सेटिंग", "settings");
+        aliases.put("कैलकुलेटर", "calculator");
+        aliases.put("घड़ी", "clock");
+        aliases.put("मैसेज", "messages");
+        aliases.put("संदेश", "messages");
+        aliases.put("फोन", "phone");
+        aliases.put("मैप्स", "maps");
+        aliases.put("प्लेस्टोर", "playstore");
+        aliases.put("टेलीग्राम", "telegram");
+        aliases.put("स्पॉटिफाई", "spotify");
+        aliases.put("नोट्स", "notes");
+    }
+
+    private String openApp(String t) {
+        String[] fillers = {"please", "प्लीज", "खोलो", "खोलिए", "खोल", "दो", "open", "launch",
+                "start", "चलाओ", "चला", "करो", "ऐप", "एप", "app", "application", "एप्लिकेशन",
+                "को", "the", "my", "मेरा", "मेरे", "जी"};
+        StringBuilder sb = new StringBuilder();
+        for (String token : t.split("\\s+")) {
+            boolean skip = false;
+            for (String f : fillers) {
+                if (token.equals(f)) {
+                    skip = true;
+                    break;
+                }
+            }
+            if (!skip) sb.append(token);
+        }
+        String q = sb.toString();
+        for (Map.Entry<String, String> e : aliases.entrySet()) {
+            q = q.replace(e.getKey(), e.getValue());
+        }
+        if (q.isEmpty()) return "कौन सा ऐप खोलूँ? नाम बताइए।";
+
+        PackageManager pm = getPackageManager();
+        Intent main = new Intent(Intent.ACTION_MAIN);
+        main.addCategory(Intent.CATEGORY_LAUNCHER);
+        List<ResolveInfo> apps = pm.queryIntentActivities(main, 0);
+
+        ResolveInfo best = null;
+        String bestLabel = "";
+        int bestScore = 0;
+        for (ResolveInfo ri : apps) {
+            String label = ri.loadLabel(pm).toString();
+            String norm = label.toLowerCase(Locale.ROOT).replace(" ", "");
+            int score = 0;
+            if (norm.equals(q)) {
+                score = 3;
+            } else if (q.length() >= 3 && norm.contains(q)) {
+                score = 2;
+            } else if (norm.length() >= 3 && q.contains(norm)) {
+                score = 1;
+            }
+            if (score > bestScore) {
+                bestScore = score;
+                best = ri;
+                bestLabel = label;
+            }
+        }
+        if (best == null) {
+            return "\"" + q + "\" नाम का ऐप नहीं मिला।";
+        }
+        Intent launch = pm.getLaunchIntentForPackage(best.activityInfo.packageName);
+        if (launch == null) return bestLabel + " को खोल नहीं पाया।";
+        startActivity(launch);
+        return bestLabel + " खोल रहा हूँ।";
+    }
+}
